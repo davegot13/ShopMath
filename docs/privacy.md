@@ -11,4 +11,4 @@ If this policy changes, the updated version will be posted on this page with a n
 
 ## Support
 
-Questions, bug reports, or feature requests: [your email address]
+Questions, bug reports, or feature requests: davegot+shopmath@gmail.com
