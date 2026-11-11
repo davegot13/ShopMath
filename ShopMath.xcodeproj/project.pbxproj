@@ -18,6 +18,13 @@
 			);
 			target = 5A0F00012EA1000000000007 /* ShopMath */;
 		};
+		F3192ECE30A50FF100DD8AC2 /* Exceptions for "docs" folder in "ShopMath" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				privacy.md,
+			);
+			target = 5A0F00012EA1000000000007 /* ShopMath */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -27,6 +34,14 @@
 				5A0F00012EA1000000000003 /* Exceptions for "ShopMath" folder in "ShopMath" target */,
 			);
 			path = ShopMath;
+			sourceTree = "<group>";
+		};
+		F3192ECA30A50F4800DD8AC2 /* docs */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F3192ECE30A50FF100DD8AC2 /* Exceptions for "docs" folder in "ShopMath" target */,
+			);
+			path = docs;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -45,6 +60,7 @@
 		5A0F00012EA1000000000005 = {
 			isa = PBXGroup;
 			children = (
+				F3192ECA30A50F4800DD8AC2 /* docs */,
 				5A0F00012EA1000000000002 /* ShopMath */,
 				5A0F00012EA1000000000006 /* Products */,
 			);
@@ -75,6 +91,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				5A0F00012EA1000000000002 /* ShopMath */,
+				F3192ECA30A50F4800DD8AC2 /* docs */,
 			);
 			name = ShopMath;
 			packageProductDependencies = (
