@@ -48,10 +48,25 @@ enum MeasureError: Error, Equatable {
     case unexpected(Character)
     /// The text ended where a number or a closing parenthesis was needed.
     case unexpectedEnd
-    /// Division by zero, a zero denominator, or a result that isn't finite (overflow).
+    /// Division by zero or a zero denominator.
     case divideByZero
+    /// A result too large to be a real measurement (not finite).
+    case tooLarge
     /// Two values with no operator between them, such as "2 3" or "2(3)".
     case missingOperator
+
+    /// Short text shown under a field that can't be read, so the user knows what to fix.
+    var message: String {
+        switch self {
+        case .empty: return "Enter a value"
+        case .unexpected("."): return "Too many decimal points"
+        case .unexpected(let c): return "\u{201C}\(c)\u{201D} isn't understood"
+        case .unexpectedEnd: return "Unfinished entry"
+        case .divideByZero: return "Can't divide by zero"
+        case .tooLarge: return "Number is too large"
+        case .missingOperator: return "Add + \u{2212} \u{00D7} \u{00F7} between numbers"
+        }
+    }
 }
 
 /// Recursive descent parser for one measurement expression. It walks an array of characters
@@ -103,21 +118,28 @@ struct MeasureParser {
         // complete value, so the user most likely left out an operator.
         if p.i < p.chars.count {
             let c = p.chars[p.i]
+            // An entry that stops at an operator or fraction bar ("7 1/", "5 +") is unfinished,
+            // even though the parser read a value before it.
+            if let last = p.chars.last(where: { $0 != " " }), "/+-×÷(.".contains(last) {
+                throw MeasureError.unexpectedEnd
+            }
+            // A point right after a complete number is a second decimal point ("1.2.3").
+            if c == ".", p.i > 0, p.chars[p.i - 1].isNumber { throw MeasureError.unexpected(".") }
             if c.isNumber || c == "." || c == "(" { throw MeasureError.missingOperator }
             throw MeasureError.unexpected(c)
         }
         // Division by zero is caught where it happens. This catches overflow from very large
-        // values, which is reported under the same case.
-        if !v.isFinite { throw MeasureError.divideByZero }
+        // values.
+        if !v.isFinite { throw MeasureError.tooLarge }
         return v
     }
 
     /// Maps typographic characters iOS keyboards insert to plain ones, so the grammar only has
-    /// to know one form of each symbol. Also turns * and the letters x and X into ×, and a
-    /// no-break space into a space. Commas go through `isThousandsComma`: a thousands separator
-    /// is dropped (2,438 is 2438) and any other comma becomes a decimal point (2,5 is 2.5).
+    /// to know one form of each symbol. Also turns * and the letters x and X into ×.
+    /// Commas go through `isThousandsComma`: a thousands separator is dropped (2,438 is 2438)
+    /// and any other comma becomes a decimal point (2,5 is 2.5).
     private static func normalize(_ s: String) -> String {
-        let chars = Array(s)
+        let chars = Array(cleanCharacters(s))
         var out = ""
         for (index, c) in chars.enumerated() {
             if c == "," {
@@ -125,41 +147,97 @@ struct MeasureParser {
                 continue
             }
             switch c {
-            case "\u{2019}", "\u{2018}", "\u{2032}", "`": out.append("'")       // smart quote, prime
-            case "\u{201C}", "\u{201D}", "\u{2033}": out.append("\"")           // smart double quote, double prime
-            case "\u{2212}", "\u{2013}", "\u{2014}": out.append("-")            // minus sign, en and em dash
             case "*", "x", "X": out.append("×")
-            case "\u{00A0}": out.append(" ")
             default: out.append(c)
             }
         }
         return out
     }
 
-    /// True when the comma at `index` separates thousands, as in 2,438 or 1,250,000: it follows
-    /// a digit, exactly three digits come after it, and the number it sits in doesn't start with
-    /// 0. Anything else is a decimal comma, so 2,5 and 0,125 keep their European meaning. A US
-    /// entry like 1,250 therefore reads as 1250, never 1.25.
+    /// Single-character fractions that arrive by paste or dictation (1½, ¾"), written out so
+    /// the grammar reads them as ordinary fractions.
+    private static let vulgarFractions: [Character: String] = [
+        "\u{00BD}": "1/2", "\u{2153}": "1/3", "\u{2154}": "2/3", "\u{00BC}": "1/4", "\u{00BE}": "3/4",
+        "\u{2155}": "1/5", "\u{2156}": "2/5", "\u{2157}": "3/5", "\u{2158}": "4/5",
+        "\u{2159}": "1/6", "\u{215A}": "5/6", "\u{215B}": "1/8", "\u{215C}": "3/8",
+        "\u{215D}": "5/8", "\u{215E}": "7/8"
+    ]
+
+    /// First pass of normalize: one form for each symbol the grammar uses.
+    /// - smart quotes and primes become ' and ", and two apostrophes in a row become " (3/4'')
+    /// - minus signs and every kind of dash or hyphen become -
+    /// - fraction slashes become /, and ½ style fractions are written out ("1½" is "1 1/2")
+    /// - full-width digits become ASCII digits
+    /// - any whitespace (tab, newline, thin or no-break space) becomes a plain space
+    static func cleanCharacters(_ s: String) -> String {
+        var out: [Character] = []
+        for c in s {
+            switch c {
+            case "\u{2019}", "\u{2018}", "\u{2032}", "`":
+                out.append("'")
+            case "\u{201C}", "\u{201D}", "\u{2033}":
+                out.append("\"")
+            case "\u{2212}", "\u{2013}", "\u{2014}", "\u{2010}", "\u{2011}", "\u{2012}":
+                out.append("-")
+            case "\u{2044}", "\u{2215}":
+                out.append("/")
+            default:
+                if let written = vulgarFractions[c] {
+                    // A digit right before it makes a mixed number: 1½ is 1 1/2.
+                    if let last = out.last, last.isNumber { out.append(" ") }
+                    out.append(contentsOf: written)
+                } else if let scalar = c.unicodeScalars.first, c.unicodeScalars.count == 1,
+                          (0xFF10...0xFF19).contains(scalar.value),
+                          let ascii = Unicode.Scalar(scalar.value - 0xFF10 + 0x30) {
+                    out.append(Character(ascii))
+                } else if c.isWhitespace {
+                    out.append(" ")
+                } else {
+                    out.append(c)
+                }
+            }
+            // Two apostrophes typed for inches (3/4'') mean one inch mark.
+            if out.count >= 2, out[out.count - 1] == "'", out[out.count - 2] == "'" {
+                out.removeLast(2)
+                out.append("\"")
+            }
+        }
+        return String(out)
+    }
+
+    /// True when the comma at `index` separates thousands. The whole run of digits and commas
+    /// around it has to be well formed: a first group of 1 to 3 digits that doesn't start with 0,
+    /// then groups of exactly 3 (2,438 or 1,250,000), with no decimal point before the run.
+    /// A run that isn't well formed is read with decimal commas instead: one comma is a European
+    /// decimal (2,5 and 0,125), and two or more give a number with several points, which the
+    /// parser rejects (1,25,000 is an error, never 1.25). A US entry like 1,250 reads as 1250.
     static func isThousandsComma(_ chars: [Character], at index: Int) -> Bool {
         guard index > 0, chars[index - 1].isNumber else { return false }
-        var digitsAfter = 0
-        var j = index + 1
-        while j < chars.count, chars[j].isNumber { digitsAfter += 1; j += 1 }
-        guard digitsAfter == 3 else { return false }
+        var start = index
+        while start > 0, chars[start - 1].isNumber || chars[start - 1] == "," { start -= 1 }
+        var end = index
+        while end + 1 < chars.count, chars[end + 1].isNumber || chars[end + 1] == "," { end += 1 }
         // A decimal point can't come before a thousands separator (1.250,5 is not supported).
-        var k = index - 1
-        while k >= 0, chars[k].isNumber || chars[k] == "," { k -= 1 }
-        if k >= 0, chars[k] == "." { return false }
-        // The number's first digit: a leading 0 means a decimal comma (0,125).
-        return chars[k + 1] != "0"
+        if start > 0, chars[start - 1] == "." { return false }
+        let groups = String(chars[start...end]).split(separator: ",", omittingEmptySubsequences: false)
+        guard let first = groups.first, (1...3).contains(first.count), first.first != "0" else { return false }
+        return groups.dropFirst().allSatisfy { $0.count == 3 }
     }
 
     /// Reads a plain number entry with no units and no math (price, percent, degrees). Accepts an
     /// optional sign, digits, and one decimal point or decimal comma, plus thousands commas.
+    /// A leading $ or USD and a trailing $, %, ° or deg are ignored.
     /// Returns nil for anything else, including the "inf", "nan" and "1e3" that Double(_:) would
     /// accept.
     static func plainNumber(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Symbols people type out of habit: $12.50, 20%, 15°, 15 deg. They're dropped, not read.
+        var trimmed = cleanCharacters(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["usd", "$"] where trimmed.lowercased().hasPrefix(prefix) {
+            trimmed = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        }
+        for suffix in ["percent", "degrees", "degree", "deg", "%", "\u{00B0}", "$"] where trimmed.lowercased().hasSuffix(suffix) {
+            trimmed = String(trimmed.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
+        }
         let chars = Array(trimmed)
         var clean = ""
         for (index, c) in chars.enumerated() {
@@ -241,7 +319,7 @@ struct MeasureParser {
             skipSpaces()
             if peek() == "'" { i += 1; return v * 12 * perInch }
             if peek() == "\"" { i += 1; return v * perInch }
-            if let f = parseUnitWord() { return v * f }
+            if let word = parseUnitWord() { return v * word.factor(perInch: perInch) }
             i = save
             return v
         }
@@ -258,34 +336,53 @@ struct MeasureParser {
         let save = i
         skipSpaces()
         if peek() == "\"" { i += 1; return q * perInch }
-        if let f = parseUnitWord() { return q * f }
+        if let word = parseUnitWord() {
+            // "7 ft 4 in" works like 7' 4": feet can be followed by inches.
+            if case .foot = word { return try inchesAfterFeet(q) }
+            return q * word.factor(perInch: perInch)
+        }
         if peek() == "'" {
             i += 1
-            var total = q * 12
-            let afterFeet = i
-            // Carpenter notation 3'-4": a dash right after the feet mark, then a digit. With a
-            // space before the dash this branch is skipped and the dash is left for subtraction.
-            if peek() == "-", let n = peek(1), n.isNumber || n == "." {
-                i += 1
-                total += try parseQuantity()
-                skipSpaces()
-                if peek() == "\"" { i += 1 }
-                return total * perInch
-            }
-            // 3' 4" or 3' 4 1/2: a number after the feet mark is inches, with or without the ".
-            skipSpaces()
-            if let n = peek(), n.isNumber || n == "." {
-                total += try parseQuantity()
-                skipSpaces()
-                if peek() == "\"" { i += 1 }
-                return total * perInch
-            }
-            // Feet alone. Give back any spaces skipped while looking for inches.
-            i = afterFeet
-            return total * perInch
+            return try inchesAfterFeet(q)
         }
         i = save
         return q
+    }
+
+    /// Called just past a feet mark or word, with the number of feet. Reads optional inches after
+    /// it and returns the total in the default unit.
+    private mutating func inchesAfterFeet(_ feet: Double) throws -> Double {
+        var total = feet * 12
+        let afterFeet = i
+        // Carpenter notation 3'-4": a dash right after the feet mark, then a digit. With a
+        // space before the dash this branch is skipped and the dash is left for subtraction.
+        if peek() == "-", let n = peek(1), n.isNumber || n == "." {
+            i += 1
+            total += try parseQuantity()
+            skipInchMark()
+            return total * perInch
+        }
+        // 3' 4" or 3' 4 1/2 or 7 ft 4 in: a number after the feet is inches, with or without
+        // an inch mark or word.
+        skipSpaces()
+        if let n = peek(), n.isNumber || n == "." {
+            total += try parseQuantity()
+            skipInchMark()
+            return total * perInch
+        }
+        // Feet alone. Give back any spaces skipped while looking for inches.
+        i = afterFeet
+        return total * perInch
+    }
+
+    /// After the inches part of a feet and inches entry, consumes a " or an inch word if one is
+    /// there. Anything else is left for the caller.
+    private mutating func skipInchMark() {
+        let save = i
+        skipSpaces()
+        if peek() == "\"" { i += 1; return }
+        if let word = parseUnitWord(), case .inch = word { return }
+        i = save
     }
 
     // quantity := number | number '/' number | int (' '+ | '-') int '/' int
@@ -348,26 +445,48 @@ struct MeasureParser {
         return (v, !sawDot)
     }
 
-    /// Reads mm, cm, m, in or ft at the cursor (any letter case) and returns the factor into
-    /// the default unit. Leaves the cursor alone and returns nil if the letters there are not
-    /// one of those words. Unlike the ' mark, "ft" takes no inches after it, so "7 ft 4" is an error.
-    private mutating func parseUnitWord() -> Double? {
+    /// A unit written as a word after a number.
+    private enum UnitWord {
+        case inch
+        case foot
+        /// Millimeters per unit: 1 for mm, 10 for cm, 1000 for m.
+        case metric(Double)
+
+        /// How many default units one of this unit is.
+        func factor(perInch: Double) -> Double {
+            switch self {
+            case .inch: return perInch
+            case .foot: return 12 * perInch
+            case .metric(let mm): return mm * perInch / 25.4
+            }
+        }
+    }
+
+    /// Reads a unit word at the cursor, in any letter case and with an optional period
+    /// ("in." or "ft."): mm, cm, m, in, ft, or spelled out (inch, inches, foot, feet,
+    /// millimeter(s), millimetre(s), centimeter(s), centimetre(s), meter(s), metre(s)), which is
+    /// how dictation writes them. Leaves the cursor alone and returns nil for any other letters.
+    private mutating func parseUnitWord() -> UnitWord? {
         let start = i
         var word = ""
         while let c = peek(), c.isLetter {
             word.append(Character(c.lowercased()))
             i += 1
         }
+        let unit: UnitWord
         switch word {
-        case "mm": return perMM
-        case "cm": return 10 * perMM
-        case "m": return 1000 * perMM
-        case "in": return perInch
-        case "ft": return 12 * perInch
+        case "mm", "millimeter", "millimeters", "millimetre", "millimetres": unit = .metric(1)
+        case "cm", "centimeter", "centimeters", "centimetre", "centimetres": unit = .metric(10)
+        case "m", "meter", "meters", "metre", "metres": unit = .metric(1000)
+        case "in", "inch", "inches": unit = .inch
+        case "ft", "foot", "feet": unit = .foot
         default:
             i = start
             return nil
         }
+        // An abbreviation's period ("3/4 in.") is skipped, but not a decimal point ("2 in.5").
+        if peek() == ".", !(peek(1)?.isNumber ?? false) { i += 1 }
+        return unit
     }
 
     /// The character `offset` places past the cursor, or nil past the end.
@@ -377,7 +496,7 @@ struct MeasureParser {
     }
 
     private mutating func skipSpaces() {
-        while let c = peek(), c == " " || c == "\t" { i += 1 }
+        while let c = peek(), c == " " { i += 1 }
     }
 }
 
@@ -452,7 +571,10 @@ enum Format {
 
     /// Fixed number of decimal places, trailing zeros kept: 1.500. See `trimmed` to drop them.
     static func decimal(_ x: Double, places: Int = 3) -> String {
-        String(format: "%.\(places)f", x)
+        let s = String(format: "%.\(places)f", x)
+        // -0 and tiny negatives print as "-0.0000". Drop the sign when nothing but zeros follow.
+        if s.hasPrefix("-"), s.dropFirst().allSatisfy({ $0 == "0" || $0 == "." }) { return String(s.dropFirst()) }
+        return s
     }
 
     /// Degrees to one decimal place with the degree sign: 22.5°.

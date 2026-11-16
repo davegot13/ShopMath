@@ -62,7 +62,9 @@ struct ContentView: View {
 ///
 /// SwiftUI's TextField has no way to set the selection on iOS 17, so this works at the UIKit
 /// level: it observes every UITextField in the app (object: nil), which is what SwiftUI's
-/// TextField uses on iOS. Call install() once at launch.
+/// TextField uses on iOS. Only number fields are moved (the numbers and punctuation keyboard);
+/// a text field such as a board's name keeps the normal tap to place behavior. Call install()
+/// once at launch.
 enum CursorToEnd {
     /// The observer token. A non-nil token means the observer is already installed, so a second
     /// install() call does nothing.
@@ -85,6 +87,7 @@ enum CursorToEnd {
                 // main queue, so assumeIsolated is safe: it states what is already true and traps
                 // at runtime if it ever isn't.
                 MainActor.assumeIsolated {
+                    guard field.keyboardType == .numbersAndPunctuation else { return }
                     let end = field.endOfDocument
                     field.selectedTextRange = field.textRange(from: end, to: end)
                 }

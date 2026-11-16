@@ -81,7 +81,9 @@ struct CleatSplit {
     let shortFace: Double
     /// Board width this was solved for.
     let boardWidth: Double
-    /// Width of the fence side piece where it touches the table. Small values mean hands near the blade.
+    /// Width of the fence side piece at its narrowest: at the table when the blade tilts away
+    /// from the fence, on top (right under the leaning blade) when it tilts toward it. Small
+    /// values mean hands near the blade. The name is from 1.0, when only the table width was kept.
     let fencePieceOnTable: Double
     /// Height of the blade needed, measured straight up from the table, before tooth clearance.
     let verticalCut: Double
@@ -120,7 +122,8 @@ struct CleatSplit {
             // offcut's wide face is on top: w − a − kh + r. Setting a equal to it gives
             // a = (w + r − kh) / 2.
             fence = (w + r - kh) / 2
-            onTable = fence
+            // Narrowest on top, where the blade leans over it.
+            onTable = fence - r
         }
         return CleatSplit(fence: fence, longFace: longFace, shortFace: longFace - r,
                           boardWidth: w, fencePieceOnTable: onTable, verticalCut: t)
@@ -161,7 +164,7 @@ struct CleatEdgeBevel {
     let longFace: Double
     /// Strip width minus r.
     let shortFace: Double
-    /// Width of the strip where it touches the table.
+    /// Width of the strip at its narrowest (see CleatSplit.fencePieceOnTable).
     let fencePieceOnTable: Double
 
     /// Bevel one edge of a strip already ripped to width. The strip rides against the fence and keeps
@@ -180,7 +183,7 @@ struct CleatEdgeBevel {
         case .towardFence:
             // The cut leans over the strip, so the face on the table is the wide one and keeps the
             // full width: a = s. The waste triangle comes off the top corner.
-            return CleatEdgeBevel(fence: s, longFace: s, shortFace: s - r, fencePieceOnTable: s)
+            return CleatEdgeBevel(fence: s, longFace: s, shortFace: s - r, fencePieceOnTable: s - r)
         }
     }
 }
@@ -382,11 +385,17 @@ struct EndGrainPlan {
         // to cover the finished length plus edge trim. Subtracting 1e-9 before ceil keeps an exact
         // fit from adding a strip when floating point rounding lands the quotient a hair above a
         // whole number.
-        let strips = Int(ceil((i.boardLength + i.edgeTrim) / i.stripWidth - 1e-9))
+        let stripCount = ceil((i.boardLength + i.edgeTrim) / i.stripWidth - 1e-9)
         // Step 2, first panel: after flattening, its thickness is each slice's face.
         let sliceFace = i.panelThickness - i.firstFlatten
         // Step 3, slices: enough to cover the finished width plus edge trim, rounded the same way.
-        let slices = Int(ceil((i.boardWidth + i.edgeTrim) / sliceFace - 1e-9))
+        let sliceCount = ceil((i.boardWidth + i.edgeTrim) / sliceFace - 1e-9)
+        // Int() crashes on a value too big for an Int, which absurd entries (a 20 digit length,
+        // a strip width of 0.0000000001) can produce. No real board needs 100,000 strips.
+        guard stripCount.isFinite, sliceCount.isFinite,
+              stripCount <= 100_000, sliceCount <= 100_000 else { return nil }
+        let strips = Int(stripCount)
+        let slices = Int(sliceCount)
         // Cut each slice thick enough to flatten down to the finished thickness.
         let sliceWidth = i.boardThickness + i.finalFlatten
         // The squaring cut, then one kerf per slice. No kerf is added for the squaring cut itself,

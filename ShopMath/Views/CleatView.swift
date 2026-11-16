@@ -248,20 +248,31 @@ struct CleatView: View {
     /// an edge bevel only needs the strip wider than the bevel run (the kerf falls outside it).
     private var invalidSection: some View {
         Section {
-            Callout(kind: .warning, text: method == .split
-                    ? "Check the inputs. The board has to be wider than its thickness plus the kerf."
-                    : "Check the inputs. The strip has to be wider than its thickness.")
+            Callout(kind: .warning, text: invalidText)
+        }
+    }
+
+    /// Why the inputs don't solve. A tilted kerf is about 1.4 times as wide across the table as the
+    /// blade is thick, so a split needs the board wider than its thickness plus about 1.4 kerfs.
+    private var invalidText: String {
+        switch method {
+        case .split where solveFrom == .cleat:
+            return "Check the inputs. The cleat's wide face has to be wider than the stock thickness."
+        case .split:
+            return "Check the inputs. The board has to be wider than its thickness plus about 1.4 \u{00D7} the kerf."
+        default:
+            return "Check the inputs. The strip has to be wider than its thickness."
         }
     }
 
     /// Safety callouts for both methods. onTable is the width of the piece between the fence and
-    /// the blade at table level, in inches; under 1" puts hands close to the blade.
+    /// the blade at its narrowest, in inches; under 1" puts hands close to the blade.
     @ViewBuilder private func warnings(onTable: Double) -> some View {
         if tilt == .towardFence {
             Callout(kind: .warning, text: "With the blade tilted toward the fence, the fence side piece is trapped under the blade. Move the fence to the other side of the blade if your saw allows it.")
         }
         if onTable < 1 {
-            Callout(kind: .warning, text: "The piece between fence and blade is under \(minPiece) at the table. Use a push block and keep your hand off the blade side.")
+            Callout(kind: .warning, text: "The piece between fence and blade is under \(minPiece) at its narrowest. Use a push block and keep your hand off the blade side.")
         }
     }
 
@@ -277,7 +288,9 @@ struct CleatView: View {
                 // Positive means the fence piece came out narrower than the offcut, so the fence
                 // moves away from the blade.
                 let move = CleatSplit.fenceCorrection(fencePieceLongFace: f, offcutLongFace: o)
-                if abs(move) < 1.0 / 128 {
+                // Metric uses 0.2 mm itself as the cutoff so the two messages never disagree
+                // (1/128" is 0.198 mm, which would say "move 0.2 mm" for a 0.199 mm error).
+                if abs(move) < (unit == .imperial ? 1.0 / 128 : 0.2 / 25.4) {
                     Callout(kind: .info, text: unit == .imperial
                             ? "Within 1/128\". Leave the fence where it is."
                             : "Within 0.2 mm. Leave the fence where it is.")

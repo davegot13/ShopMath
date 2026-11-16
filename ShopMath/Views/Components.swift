@@ -31,20 +31,30 @@ func kerfValue(_ text: String, unit: UnitSystem) -> Double {
     return 0.125
 }
 
-/// Shown under a kerf field when the entry can't be used.
-/// It uses the same test as kerfValue, so it appears exactly when the 1/8" fallback is in effect,
-/// and draws nothing otherwise.
+/// Shown under a kerf field when the entry can't be used, or looks like a mistake.
+/// The warning uses the same test as kerfValue, so it appears exactly when the 1/8" fallback is
+/// in effect. In metric a kerf under 0.5 mm also gets a note: that is almost always a fraction
+/// meant as inches (1/8 typed in mm mode reads as 0.125 mm).
 struct KerfWarning: View {
     let text: String
     @AppStorage(Keys.units) private var unit: UnitSystem = .imperial
 
     var body: some View {
         if let v = unit.inches(text), v >= 0, v < 1 {
-            EmptyView()
+            if unit == .metric, v > 0, v < 0.5 / 25.4 {
+                Callout(kind: .warning, text: "That kerf is under 0.5 mm. If you meant inches, type 1/8\".")
+            }
         } else {
-            Callout(kind: .warning, text: unit == .imperial
-                    ? "Kerf must be under 1\". Using 1/8\" until it's fixed."
-                    : "Kerf must be under 25.4 mm. Using 3.2 mm until it's fixed.")
+            let fallback = unit == .imperial ? "1/8\"" : "3.2 mm"
+            if let v = unit.inches(text) {
+                if v >= 1 {
+                    Callout(kind: .warning, text: "Kerf must be under \(unit == .imperial ? "1\"" : "25.4 mm"). Using \(fallback) until it's fixed.")
+                } else {
+                    Callout(kind: .warning, text: "Kerf can't be negative. Using \(fallback) until it's fixed.")
+                }
+            } else {
+                Callout(kind: .warning, text: "Enter a kerf, like \(unit == .imperial ? "1/8" : "3.2"). Using \(fallback) until it's fixed.")
+            }
         }
     }
 }
@@ -60,17 +70,32 @@ struct MeasureField: View {
     var caption: String? = nil
     @AppStorage(Keys.units) private var unit: UnitSystem = .imperial
 
-    /// A read-back of the entry in both units, a gray prompt when empty, or a red error.
-    /// The Bool is true for the error.
+    /// A read-back of the entry in both units, a gray prompt when empty, or an error saying
+    /// what's wrong. The Bool is true for the error (FieldRow shows it red once editing ends).
     private var status: (String, Bool) {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return ("Enter a value", false) }
-        guard let v = unit.inches(trimmed) else { return ("Can't read that", true) }
+        let parseUnit: MeasureParser.Unit = unit == .imperial ? .inch : .millimeter
+        let raw: Double
+        do { raw = try MeasureParser.evaluate(trimmed, unit: parseUnit) } catch let e as MeasureError {
+            // Commas are read as thousands separators or a decimal comma, so a failed entry
+            // with a comma in it is most likely a comma problem ("1,25,000").
+            if trimmed.contains(",") { return ("Check the commas, like 1,250 or 2,5", true) }
+            return (e.message, true)
+        } catch { return ("Can't read that", true) }
+        let v = unit == .imperial ? raw : raw / 25.4
         switch unit {
         case .imperial:
             return (Format.decimal(v, places: 4) + "\" · " + Format.mm(v), false)
         case .metric:
-            return (Format.mmNumber(v, places: 2) + " mm · " + Format.inches(v, denominator: 32), false)
+            let readBack = Format.mmNumber(v, places: 2) + " mm · " + Format.inches(v, denominator: 32)
+            // A bare fraction in mm mode is almost always inches typed out of habit. It is read
+            // as mm (1/8 is 0.125 mm), so say so.
+            // Only a lone fraction or mixed number gets the note, not division like 900/2.
+            if trimmed.range(of: #"^\d+([ -]\d+)?/\d+$"#, options: .regularExpression) != nil {
+                return (readBack + "\nRead as mm. Add \" for inches.", false)
+            }
+            return (readBack, false)
         }
     }
 
@@ -101,8 +126,8 @@ struct NumberField: View {
     /// A gray prompt when empty, a red error when the text isn't a number, and nil (no note)
     /// when it is valid. The prefix or suffix already says what the number means.
     private var status: (String, Bool)? {
-        if text.trimmingCharacters(in: .whitespaces).isEmpty { return ("Enter a number", false) }
-        return number(text) == nil ? ("Enter a number", true) : nil
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return ("Enter a number", false) }
+        return number(text) == nil ? ("Enter a plain number, like 12.5", true) : nil
     }
 
     var body: some View {
@@ -111,6 +136,8 @@ struct NumberField: View {
             TextField("0", text: $text)
                 .keyboardType(.numbersAndPunctuation)
                 .multilineTextAlignment(.trailing)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
                 .font(.body.monospacedDigit())
         }
     }
@@ -148,7 +175,6 @@ struct FieldRow<Field: View>: View {
         // At accessibility sizes the label and box don't fit side by side, so stack them.
         // AnyLayout swaps the container without changing the children's identity, so the text
         // field keeps its focus and state when the text size changes.
-        let stacked = typeSize.isAccessibilitySize
         let top = stacked
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
             : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
@@ -161,10 +187,12 @@ struct FieldRow<Field: View>: View {
                 // contentShape makes each whole frame tappable, including the spacer's empty area.
                 // The label's layout priority makes the entry box give up width first, down to
                 // minFieldWidth, before the label truncates.
+                // VoiceOver reads the label from the text field (see entry), so this copy is hidden.
                 Text(label)
                     .layoutPriority(1)
                     .contentShape(Rectangle())
                     .onTapGesture { focused = true }
+                    .accessibilityHidden(true)
                 // In the stacked layout a Spacer would only add vertical space, so leave it out.
                 if !stacked {
                     Spacer(minLength: 8)
@@ -173,12 +201,18 @@ struct FieldRow<Field: View>: View {
                 }
                 entry
             }
+            // Hidden from VoiceOver for the same reason: the field's hint reads the caption and
+            // the read-back.
             notes
                 .contentShape(Rectangle())
                 .onTapGesture { focused = true }
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 2)
     }
+
+    /// True at accessibility text sizes, where the entry box sits under its label.
+    private var stacked: Bool { typeSize.isAccessibilitySize }
 
     /// The entry box: optional prefix, the field on a filled rounded rectangle, optional suffix.
     private var entry: some View {
@@ -186,13 +220,15 @@ struct FieldRow<Field: View>: View {
             if !prefix.isEmpty {
                 Text(prefix).foregroundStyle(.secondary)
             }
-            // The visible label and caption are separate views, so pass them to VoiceOver here.
-            // A TextField takes all the width it's offered; maxWidth keeps it a compact box.
+            // The visible label, caption and read-back are separate views, so pass them to
+            // VoiceOver here. A TextField takes all the width it's offered; maxWidth keeps it a
+            // compact box. When stacked at accessibility sizes it gets the full row, and maxWidth
+            // never drops below minFieldWidth (a min above the max is a layout conflict).
             field()
                 .focused($focused)
                 .accessibilityLabel(label)
-                .accessibilityHint(caption ?? "")
-                .frame(minWidth: minFieldWidth, maxWidth: 180)
+                .accessibilityHint([caption, status].compactMap { $0 }.joined(separator: ". "))
+                .frame(minWidth: minFieldWidth, maxWidth: stacked ? .infinity : max(180, minFieldWidth * 2))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 7))
@@ -237,12 +273,14 @@ struct FieldRow<Field: View>: View {
         }
     }
 
-    /// The read-back or error, right aligned, wrapping rather than truncating.
+    /// The read-back or error, right aligned, wrapping rather than truncating. An error stays
+    /// gray while the field is being edited, since "7 1/" is incomplete rather than wrong, and
+    /// turns red once editing ends.
     @ViewBuilder private var statusText: some View {
         if let status {
             Text(status)
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(statusIsError ? Color.red : Color.secondary)
+                .foregroundStyle(statusIsError && !focused ? Color.red : Color.secondary)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -331,7 +369,7 @@ struct SettingsView: View {
     /// Routes the Units picker through UnitSwitcher so a switch also converts every stored length
     /// entry. Writing the unit key directly would leave "5 1/2" to be read as 5.5 mm.
     private var unitBinding: Binding<UnitSystem> {
-        Binding(get: { unit }, set: { UnitSwitcher.switchTo($0) })
+        Binding(get: { unit }, set: { endEditing(); UnitSwitcher.switchTo($0) })
     }
 
     var body: some View {
@@ -371,8 +409,8 @@ struct SettingsView: View {
 
                 Section {
                     Text(unit == .imperial
-                         ? "Length fields take 1.75, 1 3/4, 1-3/4, 7' 4 1/2\", 7'-4\", 19 mm, and math like (3 + 1/2) × 2. Put spaces around a minus to subtract."
-                         : "Length fields are in mm and take 139.7, 14 cm, 2.4 m, 5 1/2\", 8', and math like (450 + 18) × 2. Put spaces around a minus to subtract.")
+                         ? "Length fields take 1.75, 1 3/4, 1-3/4, 7' 4 1/2\", 7'-4\", 7 ft 4 in, 19 mm, and math like (3 + 1/2) × 2. Put spaces around a minus to subtract."
+                         : "Length fields are in mm and take 139.7, 14 cm, 2.4 m, 5 1/2\", 8', and math like (450 + 18) × 2. A fraction with no \" is read as mm. Put spaces around a minus to subtract.")
                         .font(.footnote)
                 } header: {
                     Text("Entering measurements")
@@ -442,6 +480,7 @@ struct SettingsButton: ViewModifier {
             // from the stored unit and does nothing when the target matches it. The copy can lag a
             // view update behind the store, and if it were stale its `other` would equal the stored
             // unit, so the tap would do nothing.
+            endEditing()
             UnitSwitcher.switchTo(UnitSwitcher.current().other)
         } label: {
             Text(unit.symbol)
@@ -451,6 +490,17 @@ struct SettingsButton: ViewModifier {
                 .overlay(Capsule().stroke(Color.accentColor, lineWidth: 1.5))
         }
         .accessibilityLabel("Units: \(unit.name). Switch to \(unit.other.name).")
+    }
+}
+
+/// Ends editing in whatever text field has the keyboard. Called before a unit switch: a field
+/// still being edited can write its old text back over the converted value.
+/// Only ever called from button and picker actions, which run on the main thread, so
+/// assumeIsolated (which traps if that is ever untrue) lets it be called from the picker's
+/// Binding closure, which the compiler doesn't know is on the main actor.
+func endEditing() {
+    MainActor.assumeIsolated {
+        _ = UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
 

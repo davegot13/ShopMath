@@ -170,12 +170,17 @@ struct FractionCalcView: View {
             while expression.hasSuffix(" ") { expression.removeLast() }
         case "=":
             // Writes the result back as the new expression so the user can keep going from it.
-            // Format.inchEntry gives an exact 1/64 fraction when the value is one (to within
-            // 0.00003), otherwise a decimal to 6 places. Either way the expression keeps the
-            // full value, not the fraction rounded to the precision setting, so chained
-            // calculations don't pile up rounding error. Returns early so justEvaluated stays true.
+            // A value that is exactly a 1/64 fraction is written as one (1 3/4). Anything else
+            // is written as a decimal to 10 places, so 10 ÷ 3 then × 3 still comes back to 10.
+            // Either way the expression keeps the full value, not the fraction rounded to the
+            // precision setting. Returns early so justEvaluated stays true.
             if let v = result {
-                expression = Format.inchEntry(v)
+                let fraction = Format.inchEntry(v)
+                if let back = MeasureParser.value(fraction), abs(back - v) < 1e-9 {
+                    expression = fraction
+                } else {
+                    expression = Format.trimmed(v, places: 10)
+                }
                 justEvaluated = true
             }
             return
@@ -202,6 +207,11 @@ struct FractionCalcView: View {
             // (/, ', ", and ) ) append to the result.
             if justEvaluated, key.first?.isNumber == true || key == "." || key == "(" {
                 expression = ""
+            }
+            // A second decimal point in the same number ("1.5.") is ignored rather than making
+            // the whole expression unreadable.
+            if key == ".", expression.reversed().prefix(while: { $0.isNumber || $0 == "." }).contains(".") {
+                break
             }
             expression += key
         }

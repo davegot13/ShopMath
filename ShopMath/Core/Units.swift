@@ -129,10 +129,10 @@ extension Format {
         String(format: "%.4f m³", boardFeet * cubicMetersPerBoardFoot)
     }
 
-    /// Entry text in mm, kept to 0.001 mm so a converted fraction converts back exactly
-    /// (see inchEntry for why 0.001 mm is enough).
+    /// Entry text in mm, kept to 0.0001 mm so a converted fraction converts back exactly
+    /// (see inchEntry for why 0.0001 mm is enough).
     static func mmEntry(_ inches: Double) -> String {
-        trimmed(inches * mmPerInch, places: 3)
+        trimmed(inches * mmPerInch, places: 4)
     }
 
     /// Entry text in inches that MeasureParser reads back as the same value. Used when
@@ -140,12 +140,12 @@ extension Format {
     ///
     /// A value within 0.002/64" (about 0.00003") of a multiple of 1/64" becomes a reduced
     /// fraction like "5 1/2". Anything else becomes a decimal to 6 places, fine enough that
-    /// converting it back to metric gives the same 0.001 mm entry.
+    /// converting it back to metric gives the same 0.0001 mm entry.
     static func inchEntry(_ inches: Double) -> String {
         guard inches.isFinite else { return "0" }
-        // The tolerance absorbs a trip through mm. mmEntry rounds to 0.001 mm, which moves a
-        // value at most 0.0005 mm, about 0.0013 of a 64th, so it is still inside 0.002 here.
-        // For example 1/64" becomes "0.397" mm, which reads back as 0.0156299", and the snap
+        // The tolerance absorbs a trip through mm. mmEntry rounds to 0.0001 mm, which moves a
+        // value at most 0.00005 mm, about 0.0001 of a 64th, so it is still inside 0.002 here.
+        // For example 1/64" becomes "0.3969" mm, which reads back as 0.01562598", and the snap
         // turns that into "1/64" again instead of "0.01563". The tolerance is small enough
         // that real decimals such as 0.748031 (19 mm) are not pulled to a fraction. The size
         // limit keeps the value in range for the Int math in fraction().
@@ -310,9 +310,21 @@ enum UnitSwitcher {
         // Save any missing defaults in the old units first so they are converted with the rest.
         ensureStored(d)
         for field in LengthField.allCases {
-            if let text = d.string(forKey: field.key) {
-                d.set(from.convert(text, to: target), forKey: field.key)
+            guard let text = d.string(forKey: field.key) else { continue }
+            // Switching back restores exactly what was typed. Converting 0.111" to 2.8194 mm and
+            // back gives 0.110998", close but not the user's text, and 3.01562 would come back as
+            // 3 1/64. So each switch remembers the text it replaced, and the next switch puts it
+            // back if the field still holds the converted text (the user hasn't edited it).
+            let memoKey = field.key + "_before_switch"
+            if let memo = d.dictionary(forKey: memoKey) as? [String: String],
+               memo["unit"] == target.rawValue, memo["converted"] == text, let original = memo["text"] {
+                d.set(original, forKey: field.key)
+                d.removeObject(forKey: memoKey)
+                continue
             }
+            let converted = from.convert(text, to: target)
+            d.set(converted, forKey: field.key)
+            d.set(["unit": from.rawValue, "text": text, "converted": converted], forKey: memoKey)
         }
         d.set(target.rawValue, forKey: unitKey)
     }

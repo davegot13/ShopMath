@@ -114,15 +114,14 @@ struct BoardFeetView: View {
                         if price > 0 {
                             ResultRow(label: "Cost", value: Format.money(bf * price))
                         }
+                        // Autocorrect is off so species names like Sapele aren't changed to
+                        // other words. Return adds the board, same as the button.
                         TextField("Name (optional), e.g. Maple", text: $name)
-                        // The item keeps the parsed inches, not the typed text, so it stays
-                        // correct after a unit switch.
+                            .autocorrectionDisabled()
+                            .submitLabel(.done)
+                            .onSubmit { add(d) }
                         Button {
-                            store.items.append(LumberItem(
-                                name: name.trimmingCharacters(in: .whitespaces),
-                                thickness: d.t, width: d.w, length: d.l,
-                                quantity: quantity, pricePerBoardFoot: price))
-                            name = ""
+                            add(d)
                         } label: {
                             Label("Add to lumber list", systemImage: "plus.circle.fill")
                         }
@@ -171,20 +170,27 @@ struct BoardFeetView: View {
                 }
                 .onDelete { store.items.remove(atOffsets: $0) }
 
-                // Waste applies to the totals only. An unreadable entry counts as 0%, and
-                // LumberTotals ignores negative values.
+                // Waste applies to the totals only. A blank entry counts as 0%, and LumberTotals
+                // ignores negative values. An entry that can't be read hides the with waste rows
+                // instead of showing 0% figures labeled "with waste"; the field shows the error.
                 NumberField(label: "Waste allowance", text: $wasteText, suffix: "%")
-                let totals = LumberTotals.of(store.items, wastePercent: number(wasteText) ?? 0)
+                let wasteBlank = wasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let waste = wasteBlank ? 0 : number(wasteText)
+                let totals = LumberTotals.of(store.items, wastePercent: waste ?? 0)
                 ResultRow(label: "Total", value: "\(Format.decimal(totals.boardFeet, places: 2)) bf")
-                ResultRow(label: "With waste", value: "\(Format.decimal(totals.boardFeetWithWaste, places: 2)) bf")
+                if waste != nil {
+                    ResultRow(label: "With waste", value: "\(Format.decimal(totals.boardFeetWithWaste, places: 2)) bf")
+                }
                 // Board feet stay the main unit in both systems because the price is per board
                 // foot. Metric adds the volume in cubic meters so the amount reads in familiar units.
-                if unit == .metric {
+                if unit == .metric, waste != nil {
                     ResultRow(label: "Volume with waste", value: Format.cubicMeters(boardFeet: totals.boardFeetWithWaste))
                 }
                 if totals.cost > 0 {
                     ResultRow(label: "Cost", value: Format.money(totals.cost))
-                    ResultRow(label: "Cost with waste", value: Format.money(totals.costWithWaste))
+                    if waste != nil {
+                        ResultRow(label: "Cost with waste", value: Format.money(totals.costWithWaste))
+                    }
                 }
                 Button("Clear list", role: .destructive) { confirmClear = true }
             } header: {
@@ -196,6 +202,16 @@ struct BoardFeetView: View {
     }
 
     // MARK: - Helpers
+
+    /// Adds the current board to the list and clears the name. The item keeps the parsed inches,
+    /// not the typed text, so it stays correct after a unit switch.
+    private func add(_ d: Dims) {
+        store.items.append(LumberItem(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            thickness: d.t, width: d.w, length: d.l,
+            quantity: quantity, pricePerBoardFoot: price))
+        name = ""
+    }
 
     /// Second line under the board feet result: per piece board feet when the quantity is more
     /// than one, and the volume in cubic meters in metric (board feet stay the headline because
