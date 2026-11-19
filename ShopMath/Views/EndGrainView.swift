@@ -1,6 +1,6 @@
 // EndGrainView.swift
 //
-// End Grain tab. Plans an end grain cutting board from its finished size: how many strips to
+// End Grain planner, on the Planners tab (it was its own tab before 1.2). Plans an end grain cutting board from its finished size: how many strips to
 // rip and how long, the first glue-up panel, how many slices to crosscut and at what width,
 // the size after each glue-up, and how many board feet of rough lumber to buy.
 //
@@ -12,7 +12,8 @@
 
 import SwiftUI
 
-/// The End Grain tab: cut list, glue-up steps, and lumber to buy for an end grain board.
+/// The End Grain planner: cut list, glue-up steps, and lumber to buy for an end grain board.
+/// PlannersView pushes it inside its own NavigationStack, so this view has none.
 struct EndGrainView: View {
     // MARK: - Stored entries
 
@@ -61,6 +62,22 @@ struct EndGrainView: View {
             kerf: kerfValue(kerfText, unit: unit), yieldPercent: y))
     }
 
+    /// Why there's no plan, when every entry can be read. Nil while an entry is blank or
+    /// unreadable; that field says what's wrong. The checks mirror EndGrainPlan.make.
+    private var problem: String? {
+        guard let l = unit.inches(lengthText), let w = unit.inches(widthText), let t = unit.inches(thicknessText),
+              let sw = unit.inches(stripWidthText), let p = unit.inches(panelText),
+              let f1 = unit.inches(flatten1Text), let f2 = unit.inches(flatten2Text),
+              let et = unit.inches(edgeTrimText), let nt = unit.inches(endTrimText),
+              let y = number(yieldText) else { return nil }
+        if l <= 0 || w <= 0 || t <= 0 { return "The finished board sizes have to be more than 0." }
+        if sw <= 0 { return "Strip width has to be more than 0." }
+        if f1 < 0 || f2 < 0 || et < 0 || nt < 0 { return "Allowances can't be negative." }
+        if p <= f1 { return "Panel thickness has to be more than the first flattening allowance." }
+        if y <= 0 || y > 100 { return "Lumber yield has to be more than 0 and no more than 100." }
+        return "These sizes would need more than 100,000 strips or slices. Check the inputs."
+    }
+
     /// Formats a length in inches through the current unit system at the chosen precision.
     /// Despite the name, it returns millimeters when the units are metric.
     private func inch(_ v: Double) -> String { unit.length(v, precision: precision) }
@@ -68,52 +85,48 @@ struct EndGrainView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    MeasureField(label: "Length", text: $lengthText, caption: "Along each slice")
-                    MeasureField(label: "Width", text: $widthText, caption: "Across the slices")
-                    MeasureField(label: "Thickness", text: $thicknessText)
-                } header: {
-                    Text("Finished board")
-                }
+        Form {
+            Section {
+                MeasureField(label: "Length", text: $lengthText, caption: "Along each slice")
+                MeasureField(label: "Width", text: $widthText, caption: "Across the slices")
+                MeasureField(label: "Thickness", text: $thicknessText)
+            } header: {
+                Text("Finished board")
+            }
 
-                Section {
-                    MeasureField(label: "Strip width", text: $stripWidthText,
-                                 caption: "Each strip's share of the first panel's width")
-                    MeasureField(label: "Panel thickness", text: $panelText,
-                                 caption: "First glue-up as glued, before flattening")
-                } header: {
-                    Text("First glue-up")
-                }
+            Section {
+                MeasureField(label: "Strip width", text: $stripWidthText,
+                             caption: "Each strip's share of the first panel's width")
+                MeasureField(label: "Panel thickness", text: $panelText,
+                             caption: "First glue-up as glued, before flattening")
+            } header: {
+                Text("First glue-up")
+            }
 
-                Section {
-                    MeasureField(label: "Flatten first panel", text: $flatten1Text, caption: "Total removed")
-                    MeasureField(label: "Flatten final board", text: $flatten2Text, caption: "Total removed on the drum sander")
-                    MeasureField(label: "Edge trim", text: $edgeTrimText, caption: "Off each glue-up's edges, total")
-                    MeasureField(label: "End squaring cut", text: $endTrimText)
-                    MeasureField(label: "Blade kerf", text: $kerfText)
-                    KerfWarning(text: kerfText)
-                    NumberField(label: "Lumber yield", text: $yieldText, suffix: "%",
-                                caption: "Usable share of rough stock after milling and defects")
-                } header: {
-                    Text("Allowances")
-                }
+            Section {
+                MeasureField(label: "Flatten first panel", text: $flatten1Text, caption: "Total removed")
+                MeasureField(label: "Flatten final board", text: $flatten2Text, caption: "Total removed after the second glue-up")
+                MeasureField(label: "Edge trim", text: $edgeTrimText, caption: "Off each glue-up's edges, total")
+                MeasureField(label: "End squaring cut", text: $endTrimText)
+                MeasureField(label: "Blade kerf", text: $kerfText)
+                KerfWarning(text: kerfText)
+                NumberField(label: "Lumber yield", text: $yieldText, suffix: "%",
+                            caption: "Usable share of rough stock after milling and defects")
+            } header: {
+                Text("Allowances")
+            }
 
-                if let p = plan {
-                    resultSections(p)
-                } else {
-                    // Names the two mistakes that are easy to make; the plan also fails on
-                    // unreadable entries and the other checks listed on `plan`.
-                    Section {
-                        Callout(kind: .warning, text: "Check the inputs. Panel thickness has to be more than the flattening allowance, and yield has to be more than 0 and no more than 100.")
-                    }
+            if let p = plan {
+                resultSections(p)
+            } else if let problem {
+                Section {
+                    Callout(kind: .warning, text: problem)
                 }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("End Grain Board")
-            .settingsButton()
         }
+        .scrollDismissesKeyboard(.interactively)
+        .navigationTitle("End Grain Board")
+        .settingsButton()
     }
 
     // MARK: - Sections

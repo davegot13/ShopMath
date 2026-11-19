@@ -11,6 +11,7 @@
 
 import SwiftUI
 import UIKit
+import StoreKit
 
 // MARK: - Shared settings
 
@@ -68,13 +69,15 @@ struct MeasureField: View {
     let label: String
     @Binding var text: String
     var caption: String? = nil
+    /// True for a field that may be left blank: no "Enter a value" prompt while it's empty.
+    var optional = false
     @AppStorage(Keys.units) private var unit: UnitSystem = .imperial
 
     /// A read-back of the entry in both units, a gray prompt when empty, or an error saying
     /// what's wrong. The Bool is true for the error (FieldRow shows it red once editing ends).
-    private var status: (String, Bool) {
+    private var status: (String, Bool)? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return ("Enter a value", false) }
+        if trimmed.isEmpty { return optional ? nil : ("Enter a value", false) }
         let parseUnit: MeasureParser.Unit = unit == .imperial ? .inch : .millimeter
         let raw: Double
         do { raw = try MeasureParser.evaluate(trimmed, unit: parseUnit) } catch let e as MeasureError {
@@ -100,7 +103,7 @@ struct MeasureField: View {
     }
 
     var body: some View {
-        FieldRow(label: label, caption: caption, status: status.0, statusIsError: status.1,
+        FieldRow(label: label, caption: caption, status: status?.0, statusIsError: status?.1 ?? false,
                  suffix: unit == .metric ? "mm" : "") {
             // Entries mix digits with / ' " ( ) and unit words like mm or ft, so use the
             // punctuation keyboard and keep autocorrect and capitalization from changing them.
@@ -122,12 +125,17 @@ struct NumberField: View {
     var prefix: String = ""
     var suffix: String = ""
     var caption: String? = nil
+    /// Reads the entry; nil means it can't be used. Plain numbers by default; the planners pass
+    /// stricter or looser readers (a whole count, a weight with lb or kg).
+    var reader: (String) -> Double? = number
+    /// Shown in red when `reader` returns nil.
+    var invalidMessage = "Enter a plain number, like 12.5"
 
-    /// A gray prompt when empty, a red error when the text isn't a number, and nil (no note)
+    /// A gray prompt when empty, a red error when the text can't be read, and nil (no note)
     /// when it is valid. The prefix or suffix already says what the number means.
     private var status: (String, Bool)? {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return ("Enter a number", false) }
-        return number(text) == nil ? ("Enter a plain number, like 12.5", true) : nil
+        return reader(text) == nil ? (invalidMessage, true) : nil
     }
 
     var body: some View {
@@ -280,7 +288,7 @@ struct FieldRow<Field: View>: View {
         if let status {
             Text(status)
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(statusIsError && !focused ? Color.red : Color.secondary)
+                .foregroundStyle(statusIsError && !focused ? errorRed : Color.secondary)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -297,7 +305,7 @@ func number(_ text: String) -> Double? {
 
 /// The headline number on each screen, sized to read from across the bench.
 /// A long value shrinks to as little as half size to stay on one line. VoiceOver reads the title,
-/// value, and detail as one element.
+/// value, and detail as one element. A long press offers Copy.
 struct BigResult: View {
     let title: String
     let value: String
@@ -305,7 +313,8 @@ struct BigResult: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased())
+            Text(title)
+                .textCase(.uppercase)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(value)
@@ -321,10 +330,12 @@ struct BigResult: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
+        .copyable(value)
     }
 }
 
-/// A secondary result: label on the left, value on the right in monospaced digits.
+/// A secondary result: label on the left, value on the right in monospaced digits. A long press
+/// offers Copy.
 struct ResultRow: View {
     let label: String
     let value: String
@@ -335,6 +346,68 @@ struct ResultRow: View {
                 .font(.body.monospacedDigit().weight(.medium))
                 .foregroundStyle(.primary)
         }
+        .copyable(value)
+    }
+}
+
+extension View {
+    /// Adds a long press menu with Copy, which puts `text` on the clipboard. VoiceOver users get
+    /// the same Copy in the Actions rotor.
+    func copyable(_ text: String) -> some View {
+        contextMenu {
+            Button {
+                UIPasteboard.general.string = text
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
+        .accessibilityAction(named: "Copy") { UIPasteboard.general.string = text }
+    }
+
+    /// Segmented pickers cut off their labels at accessibility text sizes; a menu doesn't.
+    func adaptivePickerStyle() -> some View {
+        modifier(AdaptivePickerStyle())
+    }
+}
+
+/// See adaptivePickerStyle().
+struct AdaptivePickerStyle: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    func body(content: Content) -> some View {
+        if typeSize.isAccessibilitySize {
+            content.pickerStyle(.menu)
+        } else {
+            content.pickerStyle(.segmented)
+        }
+    }
+}
+
+/// Error red for small text. The system red is too light on white for small text (about 3.5:1);
+/// this one is darker in light mode and the system red in dark mode.
+let errorRed = Color(uiColor: UIColor { traits in
+    traits.userInterfaceStyle == .dark ? .systemRed : UIColor(red: 0.75, green: 0.1, blue: 0.1, alpha: 1)
+})
+
+/// True while askForReviewIfDue is waiting to show the prompt.
+@MainActor private var reviewRequestPending = false
+
+/// Counts a finished task toward the rating prompt and, when ReviewPrompt says it's time, asks
+/// iOS to show it. Call right after the user finishes something (see Core/ReviewPrompt.swift).
+/// The short pause lets the screen settle before the prompt slides in.
+@MainActor func askForReviewIfDue(_ requestReview: RequestReviewAction) {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    ReviewPrompt.recordFinishedTask()
+    // A second finished task during the pause shouldn't ask twice.
+    guard !reviewRequestPending, ReviewPrompt.shouldAsk(version: version) else { return }
+    reviewRequestPending = true
+    Task { @MainActor in
+        defer { reviewRequestPending = false }
+        try? await Task.sleep(for: .seconds(1))
+        // If the app left the screen during the pause, keep this version's ask for later.
+        guard UIApplication.shared.applicationState == .active else { return }
+        ReviewPrompt.markAsked(version: version)
+        requestReview()
     }
 }
 

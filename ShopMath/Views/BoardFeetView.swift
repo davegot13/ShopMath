@@ -10,6 +10,7 @@
 // UserDefaults as JSON; ShopMathApp creates the store and passes it in as an environment object.
 
 import SwiftUI
+import StoreKit
 
 // MARK: - Lumber store
 
@@ -65,6 +66,7 @@ struct BoardFeetView: View {
     // The name only matters until the board is added, so it isn't stored.
     @State private var name = ""
     @State private var confirmClear = false
+    @Environment(\.requestReview) private var requestReview
 
     // MARK: - Parsed inputs
 
@@ -116,7 +118,7 @@ struct BoardFeetView: View {
                         }
                         // Autocorrect is off so species names like Sapele aren't changed to
                         // other words. Return adds the board, same as the button.
-                        TextField("Name (optional), e.g. Maple", text: $name)
+                        TextField("Name, like Maple (optional)", text: $name)
                             .autocorrectionDisabled()
                             .submitLabel(.done)
                             .onSubmit { add(d) }
@@ -149,6 +151,10 @@ struct BoardFeetView: View {
     @ViewBuilder private var listSection: some View {
         if !store.items.isEmpty {
             Section {
+                ShareLink(item: shareText, subject: Text("Lumber list"),
+                          preview: SharePreview("Lumber list")) {
+                    Label("Share list", systemImage: "square.and.arrow.up")
+                }
                 ForEach(store.items) { item in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
@@ -203,6 +209,34 @@ struct BoardFeetView: View {
 
     // MARK: - Helpers
 
+    /// The lumber list as plain text for the share sheet, one board per line, then the totals.
+    /// When the waste entry can't be read, the with waste lines are left out.
+    private var shareText: String {
+        let wasteBlank = wasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let waste = wasteBlank ? 0 : number(wasteText)
+        var lines = ["Lumber list"]
+        for item in store.items {
+            var line = (item.name.isEmpty ? "Board" : item.name) + ": "
+                + unit.dimensions([item.thickness, item.width, item.length], precision: 16)
+            if item.quantity > 1 { line += ", \(item.quantity) pieces" }
+            if item.pricePerBoardFoot > 0 { line += " at \(Format.money(item.pricePerBoardFoot)) per bf" }
+            line += ", " + Format.decimal(item.boardFeet, places: 2) + " bf"
+            if item.pricePerBoardFoot > 0 { line += ", " + Format.money(item.cost) }
+            lines.append(line)
+        }
+        let totals = LumberTotals.of(store.items, wastePercent: waste ?? 0)
+        lines.append("")
+        lines.append("Total: " + Format.decimal(totals.boardFeet, places: 2) + " bf")
+        if let waste, waste > 0 {
+            lines.append("With \(Format.trimmed(waste, places: 1))% waste: " + Format.decimal(totals.boardFeetWithWaste, places: 2) + " bf")
+        }
+        if totals.cost > 0 {
+            lines.append("Cost: " + Format.money(totals.cost))
+            if let waste, waste > 0 { lines.append("Cost with waste: " + Format.money(totals.costWithWaste)) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// Adds the current board to the list and clears the name. The item keeps the parsed inches,
     /// not the typed text, so it stays correct after a unit switch.
     private func add(_ d: Dims) {
@@ -211,6 +245,7 @@ struct BoardFeetView: View {
             thickness: d.t, width: d.w, length: d.l,
             quantity: quantity, pricePerBoardFoot: price))
         name = ""
+        askForReviewIfDue(requestReview)
     }
 
     /// Second line under the board feet result: per piece board feet when the quantity is more

@@ -10,6 +10,8 @@
 // precision picker edits the app wide Keys.precision setting, so it also changes the other tabs.
 
 import SwiftUI
+import UIKit
+import StoreKit
 
 /// A plain fraction calculator. It has no units: you know what you're measuring in, and the
 /// in/mm setting on the other tabs never changes it. ' still multiplies by 12 so tape readings
@@ -26,6 +28,7 @@ struct FractionCalcView: View {
     /// True right after =, so the next digit starts a new calculation. It is @State, not stored,
     /// so after a relaunch a digit appends to the saved result instead.
     @State private var justEvaluated = false
+    @Environment(\.requestReview) private var requestReview
 
     /// The expression's value, or nil while it is empty or incomplete (for example, ending in an
     /// operator).
@@ -98,6 +101,24 @@ struct FractionCalcView: View {
         .frame(maxWidth: .infinity, minHeight: 120, alignment: .bottomTrailing)
         .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .combine)
+        // Long press copies the answer, as a fraction or as a decimal.
+        .contextMenu {
+            if let v = result {
+                Button {
+                    UIPasteboard.general.string = Format.fraction(v, denominator: precision)
+                } label: {
+                    Label("Copy \(Format.fraction(v, denominator: precision))", systemImage: "doc.on.doc")
+                }
+                Button {
+                    UIPasteboard.general.string = Format.trimmed(v, places: 4)
+                } label: {
+                    Label("Copy \(Format.trimmed(v, places: 4))", systemImage: "doc.on.doc")
+                }
+            }
+        }
+        .accessibilityAction(named: "Copy") {
+            if let v = result { UIPasteboard.general.string = Format.fraction(v, denominator: precision) }
+        }
     }
 
     /// How far the fraction shown is from the exact result, when it isn't exact. Same 0.0005
@@ -175,6 +196,8 @@ struct FractionCalcView: View {
             // Either way the expression keeps the full value, not the fraction rounded to the
             // precision setting. Returns early so justEvaluated stays true.
             if let v = result {
+                // A repeat press of = on the same answer isn't a new finished task.
+                let isNewAnswer = !justEvaluated
                 let fraction = Format.inchEntry(v)
                 if let back = MeasureParser.value(fraction), abs(back - v) < 1e-9 {
                     expression = fraction
@@ -182,6 +205,7 @@ struct FractionCalcView: View {
                     expression = Format.trimmed(v, places: 10)
                 }
                 justEvaluated = true
+                if isNewAnswer { askForReviewIfDue(requestReview) }
             }
             return
         case "÷", "×", "−", "+":

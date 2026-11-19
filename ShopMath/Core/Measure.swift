@@ -252,7 +252,9 @@ struct MeasureParser {
         guard body.contains(where: { $0.isNumber }),
               body.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }),
               body.filter({ $0 == "." }).count <= 1 else { return nil }
-        return Double(clean)
+        // A 310 digit entry overflows to infinity; treat it as unreadable rather than a number.
+        guard let v = Double(clean), v.isFinite else { return nil }
+        return v
     }
 
     // expression := term (('+' | '-') term)*

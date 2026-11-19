@@ -177,7 +177,7 @@ struct CleatView: View {
                             ? "Measure it. 3/4 plywood is often 23/32."
                             : "Measure it. Sheet goods often run under their nominal size.")
             // The kerf and tilt here are the shared settings, so changing them also changes the
-            // Settings sheet (and the kerf on the End Grain tab).
+            // Settings sheet (and the kerf on the End Grain planner).
             MeasureField(label: "Blade kerf", text: $kerfText)
             KerfWarning(text: kerfText)
             Picker("Blade tilts", selection: $tilt) {

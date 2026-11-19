@@ -1,0 +1,12 @@
+# Xcode settings that belong to one person on one Mac: window layout, open tabs,
+# breakpoints and scheme choices. They change every time Xcode is used.
+xcuserdata/
+*.xcuserstate
+
+# Build output and archives
+DerivedData/
+build/
+*.xcarchive
+
+# macOS folder metadata
+.DS_Store

@@ -19,8 +19,29 @@ struct ShopMathApp: App {
         // This runs before any screen reads its @AppStorage entries. prepare() carries saved
         // values over from 1.0's dotted keys and writes every length entry that was never saved,
         // in the current unit system, so a default like "5 1/2" is never read as millimeters.
+        // 1.2 moved End Grain from the fifth tab into the Planners tab, which took its place.
+        // Anyone who used an earlier version sees a note on the Planners list until they open End
+        // Grain. 1.1 saves every entry at launch, so a saved End Grain length means 1.1 ran. 1.0
+        // saved only what the user changed, under dotted keys, so any of those means 1.0 ran.
+        // This has to run before prepare(), which saves entries for new users too and removes
+        // the dotted keys.
+        let d = UserDefaults.standard
+        if d.object(forKey: PlannersView.movedNoteKey) == nil {
+            let returning = d.object(forKey: LengthField.egLength.key) != nil
+                || UnitSwitcher.legacyKeys.contains { d.object(forKey: $0) != nil }
+            d.set(returning, forKey: PlannersView.movedNoteKey)
+        }
         UnitSwitcher.prepare()
         CursorToEnd.install()
+        // Someone who left 1.1 on End Grain comes back to it instead of the list. This runs on
+        // the first 1.2 launch only, so a new user who leaves the Planners list showing isn't
+        // sent to End Grain later.
+        if d.object(forKey: "planner_migrated") == nil {
+            if d.integer(forKey: "app_tab") == 4, d.object(forKey: "planner_open") == nil {
+                d.set(Planner.endGrain.rawValue, forKey: "planner_open")
+            }
+            d.set(true, forKey: "planner_migrated")
+        }
     }
 
     var body: some Scene {
@@ -32,9 +53,11 @@ struct ShopMathApp: App {
 }
 
 /// The root tab view. The selected tab's tag (0 to 4) is saved under "app_tab", so the app reopens
-/// on the tab the user left.
+/// on the tab the user left. Each day the app comes to the foreground counts as a day of use for
+/// the rating prompt (see Core/ReviewPrompt.swift).
 struct ContentView: View {
     @AppStorage("app_tab") private var tab = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView(selection: $tab) {
@@ -50,9 +73,12 @@ struct ContentView: View {
             AnglesView()
                 .tabItem { Label("Angles", systemImage: "angle") }
                 .tag(3)
-            EndGrainView()
-                .tabItem { Label("End Grain", systemImage: "square.grid.3x3") }
+            PlannersView()
+                .tabItem { Label("Planners", systemImage: "square.grid.2x2") }
                 .tag(4)
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { ReviewPrompt.recordUse() }
         }
     }
 }

@@ -213,6 +213,24 @@ enum LengthField: String, CaseIterable {
     case egFlatten2 = "eg_flatten2"
     case egEdgeTrim = "eg_edgeTrim"
     case egEndTrim = "eg_endTrim"
+    // Planners, added in 1.2.
+    case spLength = "sp_length"
+    case spWidth = "sp_width"
+    case drWidth = "dr_width"
+    case drHeight = "dr_height"
+    case drDepth = "dr_depth"
+    case drOverlay = "dr_overlay"
+    case drGap = "dr_gap"
+    case drFrontThickness = "dr_frontThickness"
+    case drSide = "dr_side"
+    case drGroove = "dr_groove"
+    case drCustomSide = "dr_customSide"
+    case drCustomHeight = "dr_customHeight"
+    case shSpan = "sh_span"
+    case shDepth = "sh_depth"
+    case shThickness = "sh_thickness"
+    case shEdgeThickness = "sh_edgeThickness"
+    case shEdgeHeight = "sh_edgeHeight"
 
     var key: String { rawValue }
 
@@ -238,7 +256,81 @@ enum LengthField: String, CaseIterable {
         case .egPanel: return "1 3/4"
         case .egFlatten1, .egFlatten2: return "1/8"
         case .egEdgeTrim, .egEndTrim: return "1/2"
+        case .spLength: return "36"
+        case .spWidth: return "1 1/2"
+        case .drWidth: return "15"
+        case .drHeight: return "6"
+        case .drDepth: return "21"
+        case .drOverlay: return "1/2"
+        case .drGap: return "1/16"
+        case .drFrontThickness: return "3/4"
+        case .drSide: return "1/2"
+        case .drGroove: return "1/4"
+        case .drCustomSide: return "1/2"
+        case .drCustomHeight: return "1/2"
+        case .shSpan: return "36"
+        case .shDepth: return "10"
+        case .shThickness: return "3/4"
+        // Blank means no edging strip.
+        case .shEdgeThickness, .shEdgeHeight: return ""
         }
+    }
+}
+
+/// Every weight entry the app remembers. Weights are typed in pounds in imperial and kilograms in
+/// metric, so UnitSwitcher converts them along with the lengths. Like LengthField, the raw value
+/// is the UserDefaults key.
+enum WeightField: String, CaseIterable {
+    case shelfLoad = "sh_load"
+
+    var key: String { rawValue }
+
+    /// The starting value in pounds.
+    var imperialDefault: String {
+        switch self {
+        case .shelfLoad: return "60"
+        }
+    }
+
+    /// The starting value for someone who starts in metric, in kilograms. A round number rather
+    /// than the converted 27.2155.
+    var metricDefault: String {
+        switch self {
+        case .shelfLoad: return "27"
+        }
+    }
+
+    /// Reads a weight typed in `unit` and returns pounds, or nil if it can't be read. A bare
+    /// number is in the unit system's weight (lb or kg); a trailing lb, lbs, pound(s), kg or
+    /// kilo(s) overrides it, so "27 kg" works in imperial.
+    static func pounds(_ text: String, unit: UnitSystem) -> Double? {
+        var t = MeasureParser.cleanCharacters(text).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // An abbreviation's period: "60 lb." or "27 kg.".
+        if t.hasSuffix("."), t.dropLast().last?.isLetter == true { t.removeLast() }
+        var kg = unit == .metric
+        for (word, isKg) in [("pounds", false), ("pound", false), ("lbs", false), ("lb", false),
+                             ("kilograms", true), ("kilogram", true), ("kilos", true), ("kilo", true), ("kg", true)]
+        where t.hasSuffix(word) {
+            t = String(t.dropLast(word.count)).trimmingCharacters(in: .whitespaces)
+            if t.hasSuffix(".") { t.removeLast() }
+            kg = isKg
+            break
+        }
+        // A unit word is all that's allowed besides the number; no $, % or ° here.
+        guard let first = t.first, first.isNumber || first == "." || first == "-",
+              let last = t.last, last.isNumber || last == ".",
+              let v = MeasureParser.plainNumber(t) else { return nil }
+        return kg ? v / kilogramsPerPound : v
+    }
+
+    /// Rewrites a weight typed in `from` as the same weight in `to`: kilograms to 4 decimal places,
+    /// pounds to 2.
+    /// Text that can't be read is left as it is.
+    static func convert(_ text: String, from: UnitSystem, to: UnitSystem) -> String {
+        guard from != to, let lb = pounds(text, unit: from) else { return text }
+        // Kilograms keep four places so they convert back to the pounds that were typed (60 lb is
+        // 27.2155 kg, which reads back as 59.99993 lb). Pounds keep two, which rounds that to 60.
+        return to == .imperial ? Format.trimmed(lb, places: 2) : Format.trimmed(lb * kilogramsPerPound, places: 4)
     }
 }
 
@@ -301,6 +393,9 @@ enum UnitSwitcher {
         for field in LengthField.allCases where d.string(forKey: field.key) == nil {
             d.set(UnitSystem.imperial.convert(field.imperialDefault, to: unit), forKey: field.key)
         }
+        for field in WeightField.allCases where d.string(forKey: field.key) == nil {
+            d.set(unit == .imperial ? field.imperialDefault : field.metricDefault, forKey: field.key)
+        }
     }
 
     /// Converts every stored entry to `target` and makes it the current unit system.
@@ -310,22 +405,32 @@ enum UnitSwitcher {
         // Save any missing defaults in the old units first so they are converted with the rest.
         ensureStored(d)
         for field in LengthField.allCases {
-            guard let text = d.string(forKey: field.key) else { continue }
-            // Switching back restores exactly what was typed. Converting 0.111" to 2.8194 mm and
-            // back gives 0.110998", close but not the user's text, and 3.01562 would come back as
-            // 3 1/64. So each switch remembers the text it replaced, and the next switch puts it
-            // back if the field still holds the converted text (the user hasn't edited it).
-            let memoKey = field.key + "_before_switch"
-            if let memo = d.dictionary(forKey: memoKey) as? [String: String],
-               memo["unit"] == target.rawValue, memo["converted"] == text, let original = memo["text"] {
-                d.set(original, forKey: field.key)
-                d.removeObject(forKey: memoKey)
-                continue
-            }
-            let converted = from.convert(text, to: target)
-            d.set(converted, forKey: field.key)
-            d.set(["unit": from.rawValue, "text": text, "converted": converted], forKey: memoKey)
+            switchEntry(field.key, from: from, to: target, d) { from.convert($0, to: target) }
+        }
+        for field in WeightField.allCases {
+            switchEntry(field.key, from: from, to: target, d) { WeightField.convert($0, from: from, to: target) }
         }
         d.set(target.rawValue, forKey: unitKey)
+    }
+
+    /// Converts one stored entry with `convert`.
+    ///
+    /// Switching back restores exactly what was typed. Converting 0.111" to 2.8194 mm and back
+    /// gives 0.110998", close but not the user's text, and 3.01562 would come back as 3 1/64. So
+    /// each switch remembers the text it replaced, and the next switch puts it back if the field
+    /// still holds the converted text (the user hasn't edited it).
+    private static func switchEntry(_ key: String, from: UnitSystem, to target: UnitSystem, _ d: UserDefaults,
+                                    convert: (String) -> String) {
+        guard let text = d.string(forKey: key) else { return }
+        let memoKey = key + "_before_switch"
+        if let memo = d.dictionary(forKey: memoKey) as? [String: String],
+           memo["unit"] == target.rawValue, memo["converted"] == text, let original = memo["text"] {
+            d.set(original, forKey: key)
+            d.removeObject(forKey: memoKey)
+            return
+        }
+        let converted = convert(text)
+        d.set(converted, forKey: key)
+        d.set(["unit": from.rawValue, "text": text, "converted": converted], forKey: memoKey)
     }
 }
